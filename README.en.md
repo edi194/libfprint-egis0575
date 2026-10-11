@@ -2,8 +2,8 @@
 
 > [中文版](README.md)
 
-Make the EgisTec EH575 fingerprint sensor (found in the Acer SFX14-41G and
-similar machines) genuinely usable on Linux — accuracy at the level of
+Make the EgisTec EH575 fingerprint sensor (found in the Acer SFX14-41G, Swift
+SF314-42 and similar machines) genuinely usable on Linux — accuracy at the level of
 everyday desktop unlock. The driver source ships in this repository
 (the `libfprint/` subtree carrying the full upstream history); the
 reverse-engineering research and engineering decisions are documented in
@@ -12,16 +12,66 @@ docs/. The end goal is a driver submittable to
 
 ## Install
 
-- **Arch**: `yay -S libfprint-egis0575` (the AUR package and this repo
-  share the name and the source)
-- **Debian / Fedora**: [GitHub Releases](https://github.com/cosct/libfprint-egis0575/releases)
-  carry `.deb` and `.rpm` artifacts (built automatically per `egis0575-v*` tag)
-- **Local development**: `makepkg -f -i` (root PKGBUILD, builds from the
-  working tree)
+- **Arch**: `yay -S libfprint-egis0575` (the AUR package tracks upstream
+  [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575),
+  **not** this fork)
+- **Debian / Fedora**: [Releases of this fork](https://github.com/edi194/libfprint-egis0575/releases)
+  carry `.deb` and `.rpm` artifacts (each `egis0575-v*` tag builds
+  automatically via the release workflow):
+  `sudo dnf install ./libfprint-egis0575-<version>.<dist>.x86_64.rpm`
+  — the package replaces the distribution libfprint; roll back with
+  `sudo dnf install --allowerasing libfprint`
+- **Build locally (Fedora)**:
+
+      sudo dnf install -y meson ninja-build gcc gcc-c++ rpm-build \
+        glib2-devel libgusb-devel pixman-devel libusb1-devel \
+        systemd-devel openssl-devel libgudev-devel
+      git clone https://github.com/edi194/libfprint-egis0575.git
+      cd libfprint-egis0575
+      mkdir -p ~/rpmbuild/{SOURCES,SPECS}
+      git archive --prefix=libfprint-egis0575-egis0575-v0.2.3/ HEAD \
+        | gzip -9 > ~/rpmbuild/SOURCES/libfprint-egis0575-0.2.3.tar.gz
+      cp packaging/rpm/libfprint-egis0575.spec ~/rpmbuild/SPECS/
+      rpmbuild -ba ~/rpmbuild/SPECS/libfprint-egis0575.spec
+      sudo dnf install ~/rpmbuild/RPMS/x86_64/libfprint-egis0575-0.2.3-1.*.x86_64.rpm
+
+- **Local development (Arch)**: `makepkg -f -i` (root PKGBUILD, builds from
+  the working tree)
 - **⚠ Upgrade note**: v0.2.0 template serialization dropped the orientation
   field that scoring depends on, so prints enrolled with v0.2.0 cannot
   verify on the new driver — after upgrading, run `fprintd-delete` and
   re-enroll
+
+## Fork status (2026-10-11)
+
+This fork ([edi194/libfprint-egis0575](https://github.com/edi194/libfprint-egis0575))
+is upstream master (`53221b9`) plus two reliability fixes, validated on
+real hardware:
+
+- **F1 — full calibration chain on every claim** (`SM_CAL_START` gate):
+  the upload-only re-arm (`POST_RESET` → `73 14 ec`) leaves the sensor's
+  imaging pipeline dead after a Linux-style session teardown — the first
+  claim per fprintd process captures, every later claim reads uniform
+  all-0xFF frames and finger detection never triggers (upstream's own
+  CAL_CHECK recovery comment records the same all-0xFF state, observed
+  2026-09-15). Each claim now runs the full chain: register phases →
+  read → `97 00 00` reset → upload.
+- **F1r2 — previous-session calibration adoption + longer re-read ladder**:
+  after a session teardown the firmware rebuilds its calibration RAM over
+  seconds, so the first reads return an all-zero block. The dropped
+  session block is now stashed and offered to the recovery ladder as an
+  adoption source (the same host-side cache Windows keeps), and the
+  patient 1 Hz re-read budget grows 7 → 20 attempts. This saves actions
+  without a template-embedded fallback — notably enroll, which previously
+  died with "broken calibration block, retry later" after the old print
+  had already been deleted.
+
+Validated on an **Acer Swift SF314-42** (V1.11, EgisTec EH575 1c7a:0575),
+**Fedora 44**, kernel 6.19.10-300.fc44.x86_64, fprintd 1.94.5: fingerprint
+login, repeated verifies inside one fprintd process (match on every
+claim, including the second and third), a full 12-stage re-enroll started
+right after another session (recovered via previous-session adoption),
+and enroll/verify after post-session calibration invalidation.
 
 ## Status (2026-09-13)
 

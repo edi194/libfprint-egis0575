@@ -2,19 +2,61 @@
 
 > [English version](README.en.md)
 
-让 EgisTec EH575 指纹传感器（Acer SFX14-41G 等机型）在 Linux 上真正可用
+让 EgisTec EH575 指纹传感器（Acer SFX14-41G、Swift SF314-42 等机型）在 Linux 上真正可用
 （识别精度达到 KDE 解锁水准）。驱动源码随本仓库分发（`libfprint/` 子树，
 含上游 libfprint 完整历史），逆向研究与工程决策全部留档 docs/，最终目标
 是产出可提交给 [libfprint 上游](https://gitlab.freedesktop.org/libfprint/libfprint)的驱动。
 
 ## 安装
 
-- **Arch**：`yay -S libfprint-egis0575`（AUR 与本仓库同名同源）
-- **Debian / Fedora**：[GitHub Release](https://github.com/cosct/libfprint-egis0575/releases)
-  提供 `.deb` 与 `.rpm`（每个 `egis0575-v*` 标签自动构建发布）
-- **本地开发**：`makepkg -f -i`（根目录 PKGBUILD，从工作树构建）
+- **Arch**：`yay -S libfprint-egis0575`（AUR 包跟随上游
+  [cosct/libfprint-egis0575](https://github.com/cosct/libfprint-egis0575)，
+  **不含**本 fork 的修复）
+- **Debian / Fedora**：[本 fork 的 Releases](https://github.com/edi194/libfprint-egis0575/releases)
+  提供 `.deb` 与 `.rpm`（每个 `egis0575-v*` 标签经 release workflow 自动构建发布）：
+  `sudo dnf install ./libfprint-egis0575-<版本>.<dist>.x86_64.rpm`
+  ——该包会替换发行版 libfprint；回滚：`sudo dnf install --allowerasing libfprint`
+- **本地构建（Fedora）**：
+
+      sudo dnf install -y meson ninja-build gcc gcc-c++ rpm-build \
+        glib2-devel libgusb-devel pixman-devel libusb1-devel \
+        systemd-devel openssl-devel libgudev-devel
+      git clone https://github.com/edi194/libfprint-egis0575.git
+      cd libfprint-egis0575
+      mkdir -p ~/rpmbuild/{SOURCES,SPECS}
+      git archive --prefix=libfprint-egis0575-egis0575-v0.2.3/ HEAD \
+        | gzip -9 > ~/rpmbuild/SOURCES/libfprint-egis0575-0.2.3.tar.gz
+      cp packaging/rpm/libfprint-egis0575.spec ~/rpmbuild/SPECS/
+      rpmbuild -ba ~/rpmbuild/SPECS/libfprint-egis0575.spec
+      sudo dnf install ~/rpmbuild/RPMS/x86_64/libfprint-egis0575-0.2.3-1.*.x86_64.rpm
+
+- **本地开发（Arch）**：`makepkg -f -i`（根目录 PKGBUILD，从工作树构建）
 - **⚠ 升级注意**：v0.2.0 的模板序列化丢失取向字段，该版本录入的指纹
   无法通过新驱动验证——升级后请 `fprintd-delete` 删除旧指纹并重新录入
+
+## Fork 状态（2026-10-11）
+
+本 fork（[edi194/libfprint-egis0575](https://github.com/edi194/libfprint-egis0575)）
+基于上游 master（`53221b9`），追加两项经真机验证的可靠性修复：
+
+- **F1 —— 每次 claim 都执行完整校准链**（`SM_CAL_START` 门）：仅重新上传的
+  re-arm（`POST_RESET` → `73 14 ec`）在 Linux 式会话收尾后会让传感器成像
+  失效——同一 fprintd 进程内第一次 claim 能采图，之后每次 claim 都是均匀
+  all-0xFF 帧、永远检测不到手指（上游 CAL_CHECK 恢复注释记录的 2026-09-15
+  all-0xFF 即同一状态）。现在每次 claim 都执行完整链路：寄存器相位 → 读取
+  → `97 00 00` 复位 → 上传。
+- **F1r2 —— 上一会话校准块收养 + 延长重读阶梯**：会话收尾后固件要用数秒
+  重建校准 RAM，最初几次读取全是零块。现在被丢弃的会话块会存入 stash 并
+  作为恢复阶梯的收养来源（与 Windows 主机侧缓存同型），耐心 1 Hz 重读
+  预算由 7 提至 20 次。这拯救了没有模板内嵌副本兜底的动作——尤其是
+  enroll，此前会以 "broken calibration block, retry later" 失败并且
+  旧指纹已被删除。
+
+真机验证环境：**Acer Swift SF314-42**（V1.11，EgisTec EH575 1c7a:0575）、
+**Fedora 44**、内核 6.19.10-300.fc44.x86_64、fprintd 1.94.5：指纹登录、
+同一 fprintd 进程内连续验证（每次 claim 均匹配，包括第二次与第三次）、
+会话后立即完整 12 阶段重录（经上一会话块收养恢复）、以及会话后校准
+失效场景下的 enroll/verify。
 
 ## 状态（2026-09-13）
 
