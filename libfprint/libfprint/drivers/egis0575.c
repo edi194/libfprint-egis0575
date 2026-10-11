@@ -117,6 +117,7 @@ struct _FpDeviceEgis0575
   guint         verify_gallery_n;
   guint8       *embedded_cal;      /* v2 template's calibration block: fallback when the sensor read is broken */
   gboolean      cal_recovery_adopted; /* adopted embedded cal this action; first structured frame disproves or clears it */
+  guint8       *last_session_cal;  /* F1r2: previous session's validated block; adopt fallback when no template copy exists (e.g. enroll) */
 
   Egis0575MFeatureSet *enroll_feats;    /* heap: 12 sets exceed the GObject instance limit */
   guint         enroll_stage;
@@ -353,8 +354,12 @@ sensor_health_watchdog (FpDeviceEgis0575 *self, FpiUsbTransfer *transfer, FpiSsm
  * re-read for transient corruption, adoption of the verify template's
  * embedded calibration block (v2 prints — the Windows host-side cache
  * carried through fprintd storage), then patient 1 Hz re-reads until the
- * firmware rebuild finishes. Past the cap the action fails cleanly. */
-#define EGIS0575_CAL_READ_MAX_RECOVERIES           7
+ * firmware rebuild finishes. Past the cap the action fails cleanly.
+ * F1r2 (2026-10-11): the cap outlives the observed windows — an enroll
+ * right after another session saw a rebuild longer than the old 7-attempt
+ * (~6.5 s) budget and died with the old print already deleted; 20 x 1 s
+ * keeps the honest 1 Hz wait while covering rebuilds of ~20 s. */
+#define EGIS0575_CAL_READ_MAX_RECOVERIES           20
 #define EGIS0575_CAL_REREAD_DELAY_MS            1000
 
 static const char *
@@ -2778,9 +2783,16 @@ ssm_run_state (FpiSsm *ssm, FpDevice *dev)
            * the CAL_CHECK recovery comment (2026-09-15). The register
            * phases and the 97 00 00 reset are required for imaging, so
            * drop the stale cached block and run the full chain on every
-           * claim. */
-          fp_dbg ("Stale calibration cache dropped; full chain (F1 fix)");
-          g_clear_pointer (&self->calibration, g_free);
+           * claim.
+           * F1r2: the dropped block is stashed, not freed — the post-
+           * teardown sensor-side rebuild can outlast the re-read ladder
+           * (observed 2026-10-11: enroll died after 7 broken reads; enroll
+           * has no template-embedded copy to adopt), and uploading the
+           * last validated block through the phase+reset chain is the
+           * same host-side cache Windows keeps. */
+          fp_dbg ("Stale calibration stashed; full chain (F1 fix)");
+          g_clear_pointer (&self->last_session_cal, g_free);
+          self->last_session_cal = g_steal_pointer (&self->calibration);
           self->cal_recovery_adopted = FALSE;
           self->cal_poll_iters = 0;
           fpi_ssm_next_state (ssm);
@@ -2922,10 +2934,15 @@ ssm_run_state (FpiSsm *ssm, FpDevice *dev)
              * produced all-0xFF frames). The first captured frame is checked
              * for structure (save_img) so a failed adoption falls back to
              * the patient re-reads below instead of hanging the action. */
-            if (self->cal_read_recoveries == 2 && self->embedded_cal)
+            if (self->cal_read_recoveries == 2 &&
+                (self->embedded_cal || self->last_session_cal))
               {
-                fp_warn ("Recovering: uploading the template-embedded calibration block");
-                self->calibration = g_memdup2 (self->embedded_cal, EGIS0575_IMGSIZE);
+                const guint8 *fallback = self->embedded_cal ? self->embedded_cal
+                                                            : self->last_session_cal;
+
+                fp_warn ("Recovering: uploading the %s calibration block",
+                         self->embedded_cal ? "template-embedded" : "previous-session");
+                self->calibration = g_memdup2 (fallback, EGIS0575_IMGSIZE);
                 self->cal_recovery_adopted = TRUE;
                 self->cal_poll_iters = 0;
                 fpi_ssm_jump_to_state (ssm, SM_CAL_PHASE_1);
@@ -3638,6 +3655,7 @@ fpi_device_egis0575_dispose (GObject *object)
   FpDeviceEgis0575 *self = FPI_DEVICE_EGIS0575 (object);
 
   g_clear_pointer (&self->calibration, g_free);
+  g_clear_pointer (&self->last_session_cal, g_free);
   g_clear_pointer (&self->feedback_cache, g_ptr_array_unref);
   egis0575_release_buffers (self);
 
