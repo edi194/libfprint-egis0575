@@ -1,7 +1,7 @@
 # libfprint + the experimental EgisTec EH575 (1c7a:0575) driver.
 # Research project: https://github.com/cosct/libfprint-egis0575
 # Release CI builds this spec with --define "version <driver-version>".
-%define drvver %{?version}%{!?version:0.2.2}
+%define drvver %{?version}%{!?version:0.2.3}
 %define debug_package %{nil}
 # libfprint base bundled with the driver (root meson.build version:)
 %define lfver 1.94.100
@@ -11,7 +11,7 @@ Version:        %{drvver}
 Release:        1%{?dist}
 Summary:        libfprint with the experimental EgisTec EH575 (1c7a:0575) driver
 License:        LGPL-2.1-or-later
-URL:            https://github.com/cosct/libfprint-egis0575
+URL:            https://github.com/edi194/libfprint-egis0575
 Source0:        %{url}/archive/refs/tags/egis0575-v%{drvver}.tar.gz
 ExclusiveArch:  x86_64
 
@@ -71,6 +71,16 @@ udevadm hwdb --update || :
 %{_datadir}/metainfo/org.freedesktop.libfprint.metainfo.xml
 
 %changelog
+* Sun Oct 11 2026 edi194 <edi194@users.noreply.github.com> - 0.2.3-1
+- Fork release (F1 + F1r2): run the full calibration chain on every
+  claim instead of the upload-only re-arm (bare POST_RESET+upload left
+  the sensor imaging dead after a Linux-style session teardown: all-0xFF
+  frames, coverage=0, first claim per fprintd process only), stash the
+  previous session's validated calibration block and adopt it in the
+  broken-read recovery ladder (saves enroll, which has no
+  template-embedded fallback), and raise the re-read budget 7 -> 20.
+  Validated on an Acer Swift SF314-42 (EgisTec EH575), Fedora 44,
+  kernel 6.19.10-300.fc44.x86_64, fprintd 1.94.5.
 * Sun Sep 13 2026 cosct-ci <cosct@outlook.com> - 0.2.2-1
 - Released via the release workflow (tag egis0575-v0.2.2).
 
