@@ -2768,10 +2768,22 @@ ssm_run_state (FpiSsm *ssm, FpDevice *dev)
         }
       else if (self->calibration)
         {
-          /* Cal block already cached this session: re-arm the sensor by
-           * re-uploading it (POST_RESET -> 73 14 ec -> write -> ack). */
-          fp_dbg ("Calibration cached; re-arming sensor");
-          fpi_ssm_jump_to_state (ssm, SM_POST_RESET);
+          /* F1 fix (EH575-TEST, 2026-10-11): the upload-only re-arm
+           * (POST_RESET -> 73 14 ec -> upload -> ack) leaves the sensor's
+           * imaging pipeline dead after a Linux-style session teardown:
+           * frame reads return uniform all-0xFF frames and finger
+           * detection never triggers (coverage=0). Observed on EH575
+           * 2026-10-08: the first claim per fprintd process images, every
+           * later claim is blank — the same all-0xFF state recorded in
+           * the CAL_CHECK recovery comment (2026-09-15). The register
+           * phases and the 97 00 00 reset are required for imaging, so
+           * drop the stale cached block and run the full chain on every
+           * claim. */
+          fp_dbg ("Stale calibration cache dropped; full chain (F1 fix)");
+          g_clear_pointer (&self->calibration, g_free);
+          self->cal_recovery_adopted = FALSE;
+          self->cal_poll_iters = 0;
+          fpi_ssm_next_state (ssm);
         }
       else
         {
